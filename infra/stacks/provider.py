@@ -14,11 +14,12 @@ point of the project — see docs/DECISIONS.md.
 """
 
 import aws_cdk as cdk
-from aws_cdk import CfnOutput, Duration
+from aws_cdk import CfnOutput, Duration, RemovalPolicy
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
 from aws_cdk import aws_elasticloadbalancingv2_targets as elbv2_targets
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_logs as logs
 from constructs import Construct
 
 # Small, CPU-runnable, and served over llama.cpp's OpenAI-compatible endpoint.
@@ -100,6 +101,11 @@ class ProviderStack(cdk.Stack):
             description="Internal NLB: reachable from the endpoint service only",
             allow_all_outbound=True,
         )
+        nlb_sg.add_ingress_rule(
+            ec2.Peer.ipv4(vpc.vpc_cidr_block),
+            ec2.Port.tcp(SERVICE_PORT),
+            "traffic from the VPC endpoint service on the service port",
+        )
         host_sg.add_ingress_rule(
             ec2.Peer.security_group_id(nlb_sg.security_group_id),
             ec2.Port.tcp(INFERENCE_PORT),
@@ -175,5 +181,45 @@ class ProviderStack(cdk.Stack):
             acceptance_required=False,
         )
 
+        # Flow logs so the egress claim is measurable, not asserted. ONE_MINUTE
+        # aggregation gives a window fine enough to separate inference from the
+        # bootstrap burst; ALL traffic so the report can distinguish the private
+        # subnet's internet-bound bytes from intra-VPC and NLB traffic.
+        flow_log_group = logs.LogGroup(
+            self,
+            "ProviderFlowLogs",
+            retention=logs.RetentionDays.ONE_WEEK,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        ec2.FlowLog(
+            self,
+            "VpcFlowLog",
+            resource_type=ec2.FlowLogResourceType.from_vpc(vpc),
+            destination=ec2.FlowLogDestination.to_cloud_watch_logs(log_group=flow_log_group),
+            traffic_type=ec2.FlowLogTrafficType.ALL,
+            max_aggregation_interval=ec2.FlowLogMaxAggregationInterval.ONE_MINUTE,
+            # Custom format — only the fields the egress report reads, in a fixed
+            # order the parser relies on. Smaller records than the full default.
+            log_format=[
+                ec2.LogFormat.SRC_ADDR,
+                ec2.LogFormat.DST_ADDR,
+                ec2.LogFormat.BYTES,
+                ec2.LogFormat.ACTION,
+                ec2.LogFormat.LOG_STATUS,
+                ec2.LogFormat.START_TIMESTAMP,
+            ],
+        )
+
+        # The private (PRIVATE_WITH_EGRESS) subnets are where the inference host
+        # lives; their CIDRs are what the egress report filters srcaddr against.
+        private_cidrs = [sub.ipv4_cidr_block for sub in vpc.private_subnets]
+
         CfnOutput(self, "ServiceName", value=self.service.vpc_endpoint_service_name)
         CfnOutput(self, "InferenceHostPrivateDns", value=host.instance_private_dns_name)
+        CfnOutput(self, "FlowLogGroup", value=flow_log_group.log_group_name)
+        CfnOutput(self, "ProviderVpcCidr", value=vpc.vpc_cidr_block)
+        CfnOutput(
+            self,
+            "InferenceSubnetCidrs",
+            value=cdk.Fn.join(",", private_cidrs),
+        )

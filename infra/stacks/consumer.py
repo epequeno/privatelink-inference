@@ -19,6 +19,11 @@ from constructs import Construct
 SERVICE_PORT = 443
 
 # Uses urllib from the standard library: an inline Lambda cannot pip-install.
+# After the health check, it makes N completions calls and returns per-sample
+# latencies and token counts. The local probe computes p50 and tokens/sec from
+# the raw samples — the stats stay on the laptop so they are testable without
+# AWS. The prompt is deliberately tiny (max_tokens 10) so N calls fit the
+# timeout on a CPU-only 0.5B model.
 PROBE_CODE = """
 import json
 import os
@@ -27,26 +32,64 @@ import urllib.error
 import urllib.request
 
 DNS_NAME = os.environ["ENDPOINT_DNS_NAME"]
-URL = f"http://{DNS_NAME}/health"
+HEALTH_URL = f"http://{DNS_NAME}:443/health"
+COMPLETIONS_URL = f"http://{DNS_NAME}:443/v1/chat/completions"
+
+PROMPT = {"messages": [{"role": "user", "content": "Say hello in one word."}], "max_tokens": 10}
+
+
+def _post_json(url, payload, timeout=30):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}
+    )
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def handler(event, context):
+    samples = int(event.get("samples", 5))
     started = time.perf_counter()
+
+    # Health first — if the endpoint is unreachable, the completions calls
+    # would each time out and waste the whole Lambda window.
     try:
-        with urllib.request.urlopen(URL, timeout=10) as response:
+        with urllib.request.urlopen(HEALTH_URL, timeout=10) as response:
             body = response.read(2048).decode("utf-8", "replace")
-        return {
-            "ok": True,
-            "status": response.status,
-            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
-            "body": body[:200],
-        }
+        health = {"ok": True, "status": response.status, "body": body[:200]}
     except Exception as exc:  # noqa: BLE001 - the failure is the finding
         return {
             "ok": False,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": f"health: {type(exc).__name__}: {exc}",
         }
+
+    results = []
+    for _ in range(samples):
+        t0 = time.perf_counter()
+        try:
+            with _post_json(COMPLETIONS_URL, PROMPT) as resp:
+                data = json.loads(resp.read())
+            elapsed_s = time.perf_counter() - t0
+            completion_tokens = data.get("usage", {}).get("completion_tokens", 0)
+            tps = completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
+            results.append({
+                "elapsed_ms": round(elapsed_s * 1000, 1),
+                "completion_tokens": completion_tokens,
+                "tokens_per_sec": round(tps, 1),
+            })
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                "error": f"completions: {type(exc).__name__}: {exc}",
+            }
+
+    return {
+        "ok": True,
+        "health": health,
+        "samples": results,
+        "total_elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
 """
 
 
@@ -109,14 +152,28 @@ class ConsumerStack(cdk.Stack):
             runtime=lambda_.Runtime.PYTHON_3_13,
             handler="index.handler",
             code=lambda_.Code.from_inline(PROBE_CODE),
-            timeout=Duration.seconds(30),
+            timeout=Duration.seconds(60),  # N completions calls, not just one health check
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED),
-            environment={"ENDPOINT_DNS_NAME": cdk.Fn.select(0, endpoint.vpc_endpoint_dns_entries)},
+            environment={
+                # vpc_endpoint_dns_entries are "zone-id:dns-name"; strip the
+                # zone-id prefix so urllib doesn't read it as a port number.
+                "ENDPOINT_DNS_NAME": cdk.Fn.select(
+                    1, cdk.Fn.split(":", cdk.Fn.select(0, endpoint.vpc_endpoint_dns_entries))
+                )
+            },
         )
 
         CfnOutput(self, "EndpointId", value=endpoint.vpc_endpoint_id)
         CfnOutput(self, "ProbeFunctionName", value=probe_fn.function_name)
+        CfnOutput(
+            self,
+            "EndpointDnsName",
+            # Same strip — the public probe needs a bare DNS name, not zone-id:dns.
+            value=cdk.Fn.select(
+                1, cdk.Fn.split(":", cdk.Fn.select(0, endpoint.vpc_endpoint_dns_entries))
+            ),
+        )
         CfnOutput(
             self,
             "EndpointDnsEntries",

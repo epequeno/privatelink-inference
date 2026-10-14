@@ -44,10 +44,11 @@ deploy: sync cdk-toolchain
 probe *ARGS: sync
     @uv run python -m probe.probe {{ARGS}}
 
-# Public egress from the inference subnet. Not implemented — exits non-zero.
-egress: sync
-    @echo "egress report not implemented yet — see RESULTS.md"
-    @exit 1
+# Public egress from the inference subnet, summed over a window. 0 while serving.
+# Pass --minutes N to widen the window. Exits 0 when no egress, 1 when bytes
+# leaked (or bootstrap is still running).
+egress *ARGS: sync
+    @uv run python -m probe.egress {{ARGS}}
 
 # Both stacks. The NLB and the interface endpoint bill hourly even when idle.
 down: sync cdk-toolchain

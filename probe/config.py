@@ -18,6 +18,9 @@ class Settings(BaseModel):
     service_name: str = ""
     endpoint_dns_name: str = ""
     probe_function_name: str = ""
+    flow_log_group: str = ""
+    provider_vpc_cidr: str = ""
+    inference_subnet_cidrs: str = ""
 
 
 def load() -> Settings:
@@ -27,6 +30,9 @@ def load() -> Settings:
         service_name=os.environ.get("PRIVATELINK_SERVICE_NAME", ""),
         endpoint_dns_name=os.environ.get("ENDPOINT_DNS_NAME", ""),
         probe_function_name=os.environ.get("PROBE_FUNCTION_NAME", ""),
+        flow_log_group=os.environ.get("FLOW_LOG_GROUP", ""),
+        provider_vpc_cidr=os.environ.get("PROVIDER_VPC_CIDR", ""),
+        inference_subnet_cidrs=os.environ.get("INFERENCE_SUBNET_CIDRS", ""),
     )
 
 

@@ -45,3 +45,51 @@ recommended production posture.
 `just probe --public` exits 0 when the connection is refused and 1 when it
 succeeds. The failure is the deliverable; a success means the privacy claim is
 false and should block any write-up.
+
+## 2026-10-13 · Egress is measured from flow logs, not asserted
+
+The provider VPC now publishes flow logs to CloudWatch Logs (ONE_MINUTE
+aggregation, ALL traffic), and `just egress` sums the bytes whose source is in an
+inference subnet and whose destination is outside the VPC and outside link-local.
+That definition is what makes "0 bytes" meaningful: intra-VPC traffic, the NLB,
+and the VPC DNS resolver (169.254.169.253) are all excluded, so a non-zero number
+is genuinely internet-bound. S3 + Athena was the alternative for the report; it
+was rejected as more moving parts for a window that fits in one paginated
+`filter_log_events` call. The custom `log_format` keeps records short and fixes
+the field order the parser reads.
+
+## 2026-10-13 · `egress` exit polarity is inverted from `probe --public`
+
+`just egress` exits 0 when egress is zero (privacy claim holds) and 1 when bytes
+leaked. `just probe --public` exits 0 when the call *fails* (claim holds). Both
+exit 0 on success of the privacy claim, but the natural reading differs — egress
+is a "0 is good" metric, the public probe is a "failure is good" test. Worth
+saying because a reader who memorised the public probe's polarity will guess the
+egress one wrong.
+
+## 2026-10-13 · The stats stay on the laptop, not in the Lambda
+
+The probe Lambda makes N completions calls and returns the raw per-sample
+timings; `probe.py` computes p50 latency and mean tokens/sec locally. The
+alternative was computing the summary inside the Lambda and returning only the
+two numbers. Keeping raw samples on the wire means the stats logic is unit-test
+able without AWS, and a reviewer can re-derive or re-plot from the same data.
+The cost is a slightly larger Lambda response — negligible for N ≤ 20.
+
+## 2026-10-13 · `vpc_endpoint_dns_entries` need a zone-id strip
+
+The DNS entries returned by `InterfaceVpcEndpoint.vpc_endpoint_dns_entries` are
+`zone-id:dns-name`, not bare DNS names. Passing one directly to urllib makes it
+parse the zone-id as the host and the rest as a nonnumeric port. The fix is
+`Fn.select(1, Fn.split(":", …))` in the stack, so the Lambda and the local probe
+both get a clean DNS name. A `CfnOutput` (`EndpointDnsName`) provides the same
+stripped value for the public probe.
+
+## 2026-10-13 · Port 443 in every URL, and the NLB SG inbound rule
+
+Two issues surfaced as one timeout. First, the Lambda and probe used `http://`
+(port 80) but the interface endpoint listens on 443 — port 80 was silently
+dropped by the endpoint SG. Second, the NLB security group had no inbound rule,
+so even with the right port the endpoint service's traffic was blocked at the
+NLB. Both were fixed before retesting: `:443` in every URL, and the NLB SG allows
+the VPC CIDR on the service port.

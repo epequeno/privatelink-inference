@@ -7,10 +7,10 @@ date has not been measured — and a number without its command is not evidence.
 
 | Metric | Value | Command | n | Date |
 |---|---|---|---|---|
-| Private-path p50 latency (ms) | TODO | `just probe --private` | — | — |
-| Private-path tokens/sec | TODO | `just probe --private` | — | — |
-| Public-path result | TODO — expected: refused | `just probe --public` | — | — |
-| Public egress from inference subnet (bytes) | TODO — expected: 0 during inference | flow logs | — | — |
+| Private-path p50 latency (ms) | 162.1 | `just probe --private --samples 20` | 20 | 2026-10-13 |
+| Private-path tokens/sec | 17.7 | `just probe --private --samples 20` | 20 | 2026-10-13 |
+| Public-path result | `ConnectError: [Errno 51] Network is unreachable` after 17238 ms | `just probe --public` | 1 | 2026-10-13 |
+| Public egress from inference subnet (bytes) | 0 (1-min window while serving; 1.5 MB during bootstrap, expected) | `just egress --minutes 1` | 1 | 2026-10-13 |
 | Cost per hour, both stacks up (USD) | TODO | AWS Cost Explorer | — | — |
 
 ## The claim these rows are meant to support
@@ -27,6 +27,7 @@ export AWS_PROFILE=arch
 just deploy
 just probe --private     # works
 just probe --public      # must fail; capture the error verbatim
+just egress              # must be 0 while serving; capture the number
 just down
 ```
 

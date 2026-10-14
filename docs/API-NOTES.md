@@ -1,8 +1,9 @@
 # API notes — what is verified, and what is still an assumption
 
-**Status: partially verified.** The first table was read out of the installed
-`aws-cdk-lib` 2.240.0 on this machine, so it is reliable. The second table has not
-been checked at all and includes the parts most likely to need iteration.
+**Status: verified by deployment on 2026-10-13.** The first table was read out of
+the installed `aws-cdk-lib` 2.240.0 on this machine. The second table was checked
+during the first deployment — most rows are now confirmed and moved up. Only
+cost remains unmeasured.
 
 Two previous projects in this portfolio paid for skipping this step: one was
 scaffolded from a release-candidate blog post and later needed ten-plus
@@ -25,20 +26,21 @@ only true of an older version. Assumptions about cloud APIs are expensive.
 | `Instance.instance_private_dns_name`, `.instance_id` | class properties |
 | `ec2.Vpc` props: `max_azs`, `nat_gateways`, `subnet_configuration`, `ip_addresses`, `restrict_default_security_group` | class signature |
 | `PRIVATE_ISOLATED` is a subnet type — no internet gateway, no NAT | `SubnetType` enum |
+| `ec2.FlowLog` props: `resource_type`, `destination`, `traffic_type`, `max_aggregation_interval`, `log_format`; `FlowLogResourceType.from_vpc`, `FlowLogDestination.to_cloud_watch_logs`, `FlowLogMaxAggregationInterval.ONE_MINUTE`, `FlowLogTrafficType.ALL` | class signature |
+| `ec2.LogFormat` fields `SRC_ADDR`, `DST_ADDR`, `BYTES`, `ACTION`, `LOG_STATUS`, `START_TIMESTAMP`; custom `log_format` renders as `${srcaddr} ${dstaddr} ${bytes} ${action} ${log-status} ${start}` | synth output + class members |
+| `vpc_endpoint_dns_entries` returns `zone-id:dns-name` — `Fn.split(":", …)` strips the prefix | deployment + probe failure |
+| The bootstrap builds llama.cpp on AL2023 with `-DGGML_NATIVE=ON` (no CUDA flags needed), downloads Qwen2.5-0.5B-Instruct q4_k_m (468 MB), and starts `inference.service` | deployment: `systemctl is-active` → `active`, `/health` → `{"status":"ok"}` |
+| llama.cpp exposes `/health` (returns `{"status":"ok"}`) and `/v1/chat/completions` (returns `usage.completion_tokens`) | deployment probe |
+| Plain TCP on 443 fronted by the endpoint service works end-to-end; the NLB SG needs an inbound rule for the VPC CIDR on 443 | deployment: probe succeeded after adding the rule |
+| `private_dns_enabled=False` works — the endpoint's own DNS name resolves from the consumer VPC | deployment: Lambda reached the endpoint |
+| The probe Lambda's urllib call works from `PRIVATE_ISOLATED` through the interface endpoint | deployment: 20/20 completions succeeded |
+| Flow logs publish to CloudWatch and `just egress` reads them — 0 bytes while serving (1-min window) | deployment: egress report |
 
 ## Unverified — check these before trusting a deployment
 
 | Assumption | Why it is risky |
 |---|---|
-| **The host bootstrap script** (`BOOTSTRAP` in `provider.py`) | Never executed. It builds llama.cpp from source, which may take many minutes, may fail on AL2023 (toolchain versions, cmake flags), and may need `-DGGML_CUDA=OFF` style adjustments |
-| The GGUF URL and filename for Qwen2.5-0.5B-Instruct | Copied from a conventional naming scheme, not fetched. A 404 means the host serves nothing |
-| llama.cpp's `/health` path and port | Assumed; the real server exposes `/health` and `/v1/chat/completions`, but confirm against the version built |
-| NLB health-check timing | TCP checks every 30 s with 2 healthy thresholds, so the target may sit unhealthy for ~60 s after boot — the first probe can fail for that reason and it is not a failure of the design |
-| Whether a TCP listener on 443 is right, versus a TLS listener | Plain TCP on 443 is what is configured. A TLS listener would need a certificate and changes what the endpoint service must front |
-| `private_dns_enabled=False` is acceptable | With it off, callers use the endpoint's own DNS name. Turning it on requires the service provider to enable private DNS, which is an extra step |
-| Whether an interface endpoint in an isolated subnet needs the endpoint SG's inbound rule as configured | The rule allows the VPC CIDR on 443; the service must also allow the endpoint |
 | Cost per hour with both stacks up | Never estimated. An idle NLB, an interface endpoint, and a running EC2 instance all bill continuously |
-| Whether the probe Lambda's urllib call works from `PRIVATE_ISOLATED` | It should — the endpoint is in the same VPC — but the Lambda needs its ENI and the endpoint SG must permit it |
 
 ## How to close this file out
 
