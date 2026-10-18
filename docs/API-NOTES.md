@@ -35,12 +35,23 @@ only true of an older version. Assumptions about cloud APIs are expensive.
 | `private_dns_enabled=False` works — the endpoint's own DNS name resolves from the consumer VPC | deployment: Lambda reached the endpoint |
 | The probe Lambda's urllib call works from `PRIVATE_ISOLATED` through the interface endpoint | deployment: 20/20 completions succeeded |
 | Flow logs publish to CloudWatch and `just egress` reads them — 0 bytes while serving (1-min window) | deployment: egress report |
+| `aws_sagemaker.CfnModel` takes `containers=[ContainerDefinitionProperty(model_package_name=…)]`; deploying from a registry entry needs no `image` or `model_data_url` | class signature + synth |
+| `CfnEndpointConfig.ProductionVariantProperty` has `container_startup_health_check_timeout_in_seconds` and `model_data_download_timeout_in_seconds` | class signature |
+| `ec2.InterfaceVpcEndpointAwsService.SAGEMAKER_RUNTIME` renders as `com.amazonaws.<region>.sagemaker.runtime` | synth output |
+| `AWS_REGION` cannot be set on a Lambda's `environment` — the runtime reserves it (CDK refuses at synth time) | synth error |
+| SageMaker DLC images live in account `763104351884`; `huggingface-pytorch-training:2.9.0-transformers5.3.0-gpu-py312-cu130-ubuntu22.04` and `huggingface-pytorch-tgi-inference:2.7.0-tgi3.3.6-gpu-py311-cu124-ubuntu22.04-v1.2` both resolve in us-east-1 | `ecr describe-images`, 2026-10-18 |
+| Service quotas: `ml.g5.xlarge` for training usage = 1, for endpoint usage = 2 — enough for a one-instance job and a one-instance endpoint without a quota request | `service-quotas list-service-quotas`, 2026-10-18 |
+| `CreateModelPackage` with an `InferenceSpecification` decouples the serving image from the training image, which is what lets a job trained in the HF training container be served by TGI | call shape verified against the API model; **deployment evidence pending** — see RESULTS.md |
+| `CreateModelPackage` rejects `Tags` on a package version ("Tags are not supported in Model Package versions") and rejects `Framework: "TGI"` (enum: TENSORFLOW, PYTORCH, …) | two `ValidationException`s from the call, 2026-10-18 |
+| A script-mode job's `/opt/ml/output/data` arrives as `<job>/output/output.tar.gz`, not as loose objects | first job: `NoSuchKey` for `…/output/data/results.json` |
+| The `huggingface-pytorch-tgi-inference` DLC exits with `HF_MODEL_ID must be set` even when SageMaker has unpacked the artifact into `/opt/ml/model` | failed endpoint health check, container log |
+| transformers 5.x serialises `extra_special_tokens` as a list; the transformers inside TGI 3.3.6 calls `.keys()` on it and the container cannot load the tokenizer | failed endpoint health check, `AttributeError` in `tokenization_auto.py` |
 
 ## Unverified — check these before trusting a deployment
 
 | Assumption | Why it is risky |
 |---|---|
-| Cost per hour with both stacks up | Never estimated. An idle NLB, an interface endpoint, and a running EC2 instance all bill continuously |
+| Cost per hour with the stacks up | Never estimated. An idle NLB, two interface endpoints, a NAT gateway, a running EC2 instance and a SageMaker endpoint all bill continuously |
 
 ## How to close this file out
 

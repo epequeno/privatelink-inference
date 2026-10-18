@@ -1,0 +1,5 @@
+# Installed by the DLC's script-mode toolchain before train.py runs. These are the
+# versions the legal-kit run used, and they match the transformers 5.3 image this
+# job pins, so pip is normally a no-op.
+trl==0.29.1
+peft==0.18.1

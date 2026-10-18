@@ -21,6 +21,12 @@ class Settings(BaseModel):
     flow_log_group: str = ""
     provider_vpc_cidr: str = ""
     inference_subnet_cidrs: str = ""
+    # SageMaker stage — values come from the stack outputs, as above.
+    sagemaker_probe_function_name: str = ""
+    sagemaker_artifact_bucket: str = ""
+    sagemaker_training_role_arn: str = ""
+    sagemaker_model_package_group: str = ""
+    sagemaker_hourly_rate: str = ""
 
 
 def load() -> Settings:
@@ -33,6 +39,11 @@ def load() -> Settings:
         flow_log_group=os.environ.get("FLOW_LOG_GROUP", ""),
         provider_vpc_cidr=os.environ.get("PROVIDER_VPC_CIDR", ""),
         inference_subnet_cidrs=os.environ.get("INFERENCE_SUBNET_CIDRS", ""),
+        sagemaker_probe_function_name=os.environ.get("SAGEMAKER_PROBE_FUNCTION_NAME", ""),
+        sagemaker_artifact_bucket=os.environ.get("SAGEMAKER_ARTIFACT_BUCKET", ""),
+        sagemaker_training_role_arn=os.environ.get("SAGEMAKER_TRAINING_ROLE_ARN", ""),
+        sagemaker_model_package_group=os.environ.get("SAGEMAKER_MODEL_PACKAGE_GROUP", ""),
+        sagemaker_hourly_rate=os.environ.get("SAGEMAKER_HOURLY_RATE", ""),
     )
 
 

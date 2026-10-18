@@ -10,11 +10,16 @@ moving parts) purely for convenience. ``aws lambda invoke`` is a control-plane
 API call, so it works from a laptop without any route into the VPC.
 """
 
+from pathlib import Path
+
 import aws_cdk as cdk
 from aws_cdk import CfnOutput, Duration
 from aws_cdk import aws_ec2 as ec2
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from constructs import Construct
+
+PROBE_ASSET = Path(__file__).resolve().parents[1] / "lambda" / "sagemaker_probe"
 
 SERVICE_PORT = 443
 
@@ -102,6 +107,7 @@ class ConsumerStack(cdk.Stack):
         construct_id: str,
         *,
         service_name: str,
+        sagemaker_endpoint_name: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -164,8 +170,83 @@ class ConsumerStack(cdk.Stack):
             },
         )
 
+        # The same "no public route" constraint, applied to a managed AWS service.
+        # `sagemaker.runtime` is the data-plane API (InvokeEndpoint); with private
+        # DNS enabled the SDK's normal hostname resolves to these ENIs, so the
+        # call never leaves the VPC.
+        sagemaker_sg = ec2.SecurityGroup(
+            self,
+            "SageMakerEndpointSg",
+            vpc=vpc,
+            description="sagemaker.runtime interface endpoint: HTTPS from the VPC",
+            allow_all_outbound=False,
+        )
+        sagemaker_sg.add_ingress_rule(
+            ec2.Peer.ipv4(vpc.vpc_cidr_block),
+            ec2.Port.tcp(SERVICE_PORT),
+            "from the consumer VPC",
+        )
+        sagemaker_endpoint = ec2.InterfaceVpcEndpoint(
+            self,
+            "SageMakerRuntimeEndpoint",
+            vpc=vpc,
+            service=ec2.InterfaceVpcEndpointAwsService.SAGEMAKER_RUNTIME,
+            subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED),
+            security_groups=[sagemaker_sg],
+            private_dns_enabled=True,  # the SDK is used unmodified; DNS does the routing
+        )
+
+        # boto3 and botocore ship in the Lambda runtime, so this asset needs no
+        # bundling step and `just verify` never invokes it.
+        sagemaker_probe_role = iam.Role(
+            self,
+            "SageMakerProbeRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
+            ],
+        )
+        sagemaker_probe_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["sagemaker:InvokeEndpoint"],
+                resources=[
+                    f"arn:aws:sagemaker:{self.region}:{self.account}:endpoint/"
+                    f"{sagemaker_endpoint_name}"
+                ],
+            )
+        )
+        # Attached before the function exists: Lambda creates the ENIs at creation
+        # time, so the role needs these permissions by then, not by first invoke.
+        sagemaker_probe_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "ec2:CreateNetworkInterface",
+                    "ec2:DescribeNetworkInterfaces",
+                    "ec2:DeleteNetworkInterface",
+                ],
+                resources=["*"],
+            )
+        )
+        sagemaker_probe = lambda_.Function(
+            self,
+            "SageMakerProbeFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=lambda_.Code.from_asset(str(PROBE_ASSET)),
+            role=sagemaker_probe_role,
+            timeout=Duration.seconds(120),
+            memory_size=256,
+            vpc=vpc,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED),
+            # AWS_REGION is set by the Lambda runtime and cannot be overridden.
+            environment={"SAGEMAKER_ENDPOINT_NAME": sagemaker_endpoint_name},
+        )
         CfnOutput(self, "EndpointId", value=endpoint.vpc_endpoint_id)
         CfnOutput(self, "ProbeFunctionName", value=probe_fn.function_name)
+        CfnOutput(self, "SageMakerProbeFunctionName", value=sagemaker_probe.function_name)
+        CfnOutput(self, "SageMakerEndpointId", value=sagemaker_endpoint.vpc_endpoint_id)
         CfnOutput(
             self,
             "EndpointDnsName",

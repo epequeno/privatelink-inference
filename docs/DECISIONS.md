@@ -93,3 +93,69 @@ dropped by the endpoint SG. Second, the NLB security group had no inbound rule,
 so even with the right port the endpoint service's traffic was blocked at the
 NLB. Both were fixed before retesting: `:443` in every URL, and the NLB SG allows
 the VPC CIDR on the service port.
+
+## 2026-10-18 · SageMaker is a third stack, not a third VPC
+
+The managed service has no provider VPC of ours to build: SageMaker owns the
+hosting account. So the stack contains only what we control — the artifact
+bucket, the two execution roles, the Model Registry package group, and the
+endpoint — and the "no public route" claim moves to the consumer side, where the
+`sagemaker.runtime` interface endpoint lives. Building a fake provider VPC around
+a managed service would have looked symmetric and meant nothing.
+
+## 2026-10-18 · The endpoint is deployed from the registry, not from an S3 URL
+
+`CfnModel` takes `ModelPackageName` rather than `ModelDataUrl`, so the chain
+training job → model package → endpoint is real: the endpoint cannot be built
+from an artifact that was never registered. The registry entry's
+`InferenceSpecification` names the **TGI** image while the job trained in the HF
+training image — without that split, deploying from the registry would try to
+serve with the training container.
+
+## 2026-10-18 · Two-phase deploy through `infra/cdk.context.json`
+
+An endpoint cannot exist before a model package does, and CDK cannot know a
+bundle-time ARN at synth time. The stack therefore reads an optional
+`model_package_arn` context: absent, it stops at bucket + roles + registry;
+present, it adds model, endpoint config, endpoint, dashboard and alarm.
+`just sagemaker-deploy` writes that ARN into `infra/cdk.context.json`, which is
+**gitignored because the ARN contains the account id**, and `just down` clears it
+so a later `deploy` cannot resurrect a destroyed endpoint. `just verify` passes a
+placeholder ARN on the command line, so the endpoint constructs are still part of
+the offline gate.
+
+## 2026-10-18 · The endpoint's name is fixed, not CDK-generated
+
+`qwen-legal-lora` is a constant. The probe Lambda is configured with the name at
+deploy time, so a generated name would couple the two stacks' deploy order and
+make the Lambda's IAM resource ARN unsynthesizable before the endpoint exists.
+
+## 2026-10-18 · The negative test had to change shape
+
+For llama.cpp the public probe is "the same URL fails from a laptop". For a
+managed AWS service that test is meaningless: the invoke API is public by design,
+and a laptop can always call it with credentials. The claim being made is about
+the *consumer VPC*, so the probe Lambda reports three things instead — where
+`runtime.sagemaker.<region>.amazonaws.com` resolves (must be RFC1918, proving
+private DNS), whether that VPC can reach any public host (it cannot, verbatim
+error), and N timed invokes that succeed. Success on the third with failure on
+the second is the evidence. `just sagemaker-probe --public` exits 0 when the
+internet is unreachable, the same polarity as `just egress`.
+
+## 2026-10-18 · Real-time endpoint, with the cost stated rather than hidden
+
+Serverless would scale to zero and be cheaper to leave running, but cold starts
+make p50 a measure of start-up rather than of serving, which is the comparison
+this repo is built to make. Real-time on `ml.g5.xlarge` costs $1.41/h whether or
+not it is called; the control is same-day teardown (`just down`) plus a $50 AWS
+Budget on this project's tag, not an estimate in a document. The missing cold
+start is recorded as a gap instead of being papered over with a serverless row
+that would not be comparable.
+
+## 2026-10-18 · 350 committed samples instead of a pointer to legal-kit
+
+The job's input is committed (`data/sft/`), not read from `~/code/legal-kit`, so
+the training command in RESULTS.md reproduces from a fresh clone. The sampler is
+committed too, and the README says the sample is small and the point is the AWS
+surface. One epoch over 300 rows will not produce a good model; claiming
+otherwise would be the more expensive mistake.

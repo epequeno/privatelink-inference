@@ -9,6 +9,13 @@ __pycache__/
 # CDK
 cdk.out/
 .cdk.staging/
+# Written by `just sagemaker-deploy`; holds a model package ARN (and therefore the
+# account id). Never commit it — regenerated from results/model_package.json.
+infra/cdk.context.json
+
+# Run artifacts: job ARNs, endpoint probes, spend figures. The numbers are copied
+# into RESULTS.md by hand, the files stay local (they contain the account id).
+results/
 
 # Local-only values: account id, profile, endpoint ids.
 LOCAL.md
