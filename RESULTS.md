@@ -48,6 +48,54 @@ proportionally with batching, and the EC2 one barely moves because a 2-vCPU host
 is already saturated at one stream. Endpoint spin-up is measured from
 CloudFormation events (`Endpoint` `CREATE_IN_PROGRESS` → `CREATE_COMPLETE`).
 
+## Known issues in the comparison
+
+Neither is fixed. Both are arithmetic on the numbers above plus one piece of evidence that
+was not surfaced, and both are settled by the re-deploy that is **planned but not yet done**.
+
+### The two paths did not do the same amount of work
+
+Same prompt, same 10-token cap on both — but the stored probe output
+(`results/sagemaker_probe_20261018-224054.json`, gitignored) shows **all 20 samples hitting the
+cap**, `finish_reason: "length"`, exactly 10 tokens each:
+
+```
+"generated_text": " Hello. \n\nThis is a very simple sentence."
+"details": {"finish_reason": "length", "generated_tokens": 10}
+```
+
+The model answered in two tokens and then continued for eight more to fill the budget. The
+llama.cpp path, called through `/v1/chat/completions`, applies a chat template and stops:
+19.6 tok/s × 0.1475 s = **2.9 tokens**. So the SageMaker latency includes roughly seven tokens
+of unwanted continuation that the llama.cpp call never generated, and the two paths were not
+answering the same question.
+
+**This does not make the 7.4× tokens/sec ratio a token-count artifact.** Both figures are
+genuine rates — tokens per second — and a rate does not scale with the size of the sample. What
+it does mean is that the two rates are measured over very different sample lengths: a 2.9-token
+request is dominated by prefill and fixed overhead, so llama.cpp's rate is dragged *below* its
+steady-state generation rate, while the 10-token SageMaker rate sits closer to steady state.
+Equal-work sampling would narrow the gap, but by how much **cannot be derived from the numbers
+here** — it needs the prefill/decode split, which neither probe records. That is what the
+re-deploy would settle.
+
+`completion_tokens` is recorded per sample by both probes — the SageMaker handler comments
+that it is kept "so a reader can check what was actually counted" — but it is not surfaced in
+the table above. Surfacing it is the change that would have caught this, and it is part of the
+re-deploy.
+
+### Not apples-to-apples on hardware
+
+The two rows differ in four things at once: **CPU** (`c6i.large`) vs **GPU** (`ml.g5.xlarge`),
+q4_k_m vs bf16, llama.cpp vs TGI, and base weights vs base + adapter. The weights difference is
+stated above. The rest mean the latency and throughput deltas are dominated by **CPU vs GPU**,
+so they are not attributable to the *hosting path* either. Only two rows are attributable to
+that choice — provisioning time and `$/1k` — and both are sound.
+
+Phase 1 of the plan chose Qwen2.5-0.5B precisely so this comparison would be apples-to-apples.
+The same base model was used, but not the same hardware class or precision, so that goal was
+not met.
+
 ## Model development — a real SageMaker Training Job
 
 | Item | Value |

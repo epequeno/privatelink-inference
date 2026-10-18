@@ -25,6 +25,16 @@ same internet-less VPC through the `sagemaker.runtime` interface endpoint.
 > `runtime.sagemaker.us-east-1.amazonaws.com` resolves to `10.0.1.96` and a
 > public host **times out after 10 s**. Full numbers, commands and the cost
 > breakdown are in [RESULTS.md](RESULTS.md).
+>
+> **Known issues in this comparison.** The two rows differ in hardware class
+> (CPU vs GPU) and precision, so the latency and throughput deltas are not
+> attributable to the hosting path. They also did not do the same amount of
+> work: the SageMaker path ran to its 10-token cap (`finish_reason: "length"`)
+> while llama.cpp answered and stopped at ~3 tokens, so the SageMaker latency
+> includes unwanted continuation. Equal-work sampling would narrow the
+> tokens/sec gap by an amount these numbers cannot settle. A re-deploy to
+> match generation and surface per-request token counts is **planned but not
+> yet done**. Details: [RESULTS.md § Known issues](RESULTS.md#known-issues-in-the-comparison).
 
 > ### Scope
 >
